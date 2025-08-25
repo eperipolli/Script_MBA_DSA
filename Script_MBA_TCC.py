@@ -45,7 +45,6 @@ from statsmodels.robust.robust_linear_model import RLM
 import statsmodels.formula.api as smf
 from statsmodels.stats.diagnostic import het_breuschpagan
 from scipy.stats import boxcox # transformação de Box-Cox
-from scipy.stats import yeojohnson # transformação de Yeo Johnson
 from scipy.stats import norm # para plotagem da curva normal
 from scipy.stats import mannwhitneyu
 from scipy.stats import pearsonr # correlações de Pearson
@@ -914,10 +913,10 @@ def remover_outliers(df, coluna):
     return df[filtro]
 
 # Cópia do DataFrame original
-dados_final_sem_outliers_BP = arquivo_final.copy()
+dados_final_sem_outliers_BP2 = arquivo_final.copy()
 
 # Separar colunas numéricas, excluindo 'gc2'
-colunas_numericas = dados_final_sem_outliers_BP.select_dtypes(include='number').columns
+colunas_numericas = dados_final_sem_outliers_BP2.select_dtypes(include='number').columns
 colunas_para_filtrar = [col for col in colunas_numericas if col not in ['gc2', 'Lucratividade']]
 
 # Contagem antes
@@ -929,7 +928,7 @@ plt.figure(figsize=(20, 3 * n_var))
 
 # Remover outliers e fazer boxplots
 for i, coluna in enumerate(colunas_para_filtrar, 1):
-    dados_final_sem_outliers_BP = remover_outliers(dados_final_sem_outliers_BP, coluna)
+    dados_final_sem_outliers_BP2 = remover_outliers(dados_final_sem_outliers_BP2, coluna)
 
     # Boxplot original
     plt.subplot(n_var, 2, 2*i - 1)
@@ -945,16 +944,16 @@ plt.tight_layout()
 plt.show()
 
 # Contagem depois
-contagem_depois = dados_final_sem_outliers_BP.notna().sum().to_frame(name='Depois')
+contagem_depois = dados_final_sem_outliers_BP2.notna().sum().to_frame(name='Depois')
 comparacao_outliers = contagem_antes.join(contagem_depois)
 comparacao_outliers['Diferença'] = comparacao_outliers['Antes'] - comparacao_outliers['Depois']
 print("\nComparativo de contagem de dados por variável antes e depois da remoção de outliers:")
 print(comparacao_outliers)
 
 # Estatísticas descritivas com % de NA
-descricao = dados_final_sem_outliers_BP.describe(include='all')
-total_nan = dados_final_sem_outliers_BP.isna().sum()
-porcent_nan = (total_nan / len(dados_final_sem_outliers_BP)) * 100
+descricao = dados_final_sem_outliers_BP2.describe(include='all')
+total_nan = dados_final_sem_outliers_BP2.isna().sum()
+porcent_nan = (total_nan / len(dados_final_sem_outliers_BP2)) * 100
 missing_df = pd.DataFrame({
     'missing_total': total_nan,
     'missing_percent': porcent_nan.round(2)
@@ -965,16 +964,16 @@ print(descricao_com_missing)
 #%% Filtrar Dataset com base no número de GC
 
 # Contar a frequência de observações na variável 'gc2'
-frequencia_gc2 = dados_final_sem_outliers_BP['gc2'].value_counts()
+frequencia_gc2 = dados_final_sem_outliers_BP2['gc2'].value_counts()
 # Exibir o resultado
 print(frequencia_gc2)
 
 # Identificar os grupos com apenas uma ocorrência
-grupos_unicos = dados_final_sem_outliers_BP['gc2'].value_counts()
+grupos_unicos = dados_final_sem_outliers_BP2['gc2'].value_counts()
 grupos_para_remover = grupos_unicos[grupos_unicos <= 5].index
 
 # Remover essas linhas do dataframe
-df_filtrado = dados_final_sem_outliers_BP[~dados_final_sem_outliers_BP['gc2'].isin(grupos_para_remover)]
+df_filtrado = dados_final_sem_outliers_BP2[~dados_final_sem_outliers_BP2['gc2'].isin(grupos_para_remover)]
 
 # Verificar o resultado
 print(df_filtrado['gc2'].value_counts())
@@ -994,186 +993,132 @@ VIF["VIF"] = [variance_inflation_factor(X1.values, i+1)
 VIF["Tolerância"] = 1 / VIF["VIF"]
 VIF
 
+#%% Funçoes auxiliares
 
-#%% Estimação do modelo nulo (modelo_nulo_hlm2_gc)
+def lrtest(model_base, model_comp):
+    """
+    Likelihood Ratio Test entre dois modelos (OLS ou MixedLM).
+    """
+    ll_base = model_base.llf
+    ll_comp = model_comp.llf
 
-#VAR DEPENDENTE = LUCRATIVIDADE
-#SEM VAR INDEPENDENTE ~1 (MODELO NULO)
-#GRUPOS = GC2 (IDENTIFICA O AGRUPAMENTO DOS ANIMAIS, CRIA UMA ESTRUTURA DE NIVEL 2 (GC2) SOBRE OS NIVEIS 1 (ANIMAIS))
- 
-modelo_nulo_hlm2_gc = sm.MixedLM.from_formula(formula='Lucratividade ~ 1',
-                                           groups='gc2',
-                                           re_formula='1',
-                                           data=df_filtrado).fit(reml=False)  # <- Usa ML ao invés de REML
+    # Determinar número de parâmetros
+    # MixedLM tem df_modelwc, OLS usa df_model + 1 (intercepto)
+    def n_params(model):
+        if hasattr(model, 'df_modelwc'):   # MixedLM
+            return model.df_modelwc
+        elif hasattr(model, 'df_model'):   # OLS
+            return model.df_model + 1
+        else:
+            raise ValueError("Modelo não suportado para LR test")
+    
+    df_diff = n_params(model_comp) - n_params(model_base)
+    LR_stat = -2 * (ll_base - ll_comp)
+    p_val = stats.chi2.sf(LR_stat, df_diff)
+    
+    print("==========================================")
+    print("Likelihood Ratio Test")
+    print(f"-2*(LL_base - LL_comp): {LR_stat:.3f}")
+    print(f"Grau(s) de liberdade: {df_diff}")
+    print(f"P-valor: {p_val:.4f}")
+    
+    if p_val <= 0.05:
+        print("Resultado: Rejeita H0 → modelo completo melhora significativamente o ajuste")
+    else:
+        print("Resultado: Não rejeita H0 → nenhum ganho significativo no ajuste")
+    print("==========================================\n")
+
+def efeito_aleatorio_significativo(modelo, idx_se_table=1):
+    """
+    Testa de forma aproximada a significância do efeito aleatório.
+    """
+    var_re = float(modelo.cov_re.iloc[0,0])
+    se = float(pd.DataFrame(modelo.summary().tables[1]).iloc[idx_se_table,1])
+    z = var_re / se
+    p_val = 2 * (1 - stats.norm.cdf(abs(z)))
+    
+    print(f"Estatística z efeito aleatório: {z:.3f}")
+    print(f"P-valor aproximado: {p_val:.3f}")
+    
+    if p_val >= 0.05:
+        print("Ausência de significância estatística do efeito aleatório (95% confiança)")
+    else:
+        print("Efeito aleatório significativo (95% confiança)")
+    print("==========================================\n")
+    return z, p_val
 
 
-#%% ICC
+#%% Modelo nulo OLS para comparação
 
-#O que o modelo estima?
-#Variância entre GC: quanta variação na Lucratividade é devida às diferenças entre GC.
+modelo_ols_nulo = sm.OLS.from_formula('Lucratividade ~ 1', data=df_filtrado).fit()
+print(modelo_ols_nulo.summary())
 
-#Caclular o ICC (Intra-Class Correlation)
-#Mostra qual proporção da variância total está entre os grupos (GC2). Se o ICC for alto, vale a pena usar modelos multiníveis.
+# Teste de razão de verossimilhança
 
-# Variância entre escolas (nível 2)
-var_entre_gc = modelo_nulo_hlm2_gc.cov_re.iloc[0, 0]
+#%% Modelo nulo (MixedLM sem covariáveis)
 
-# Variância residual (nível 1)
-var_residual = modelo_nulo_hlm2_gc.scale
+modelo_nulo_hlm2_gc = sm.MixedLM.from_formula(
+    'Lucratividade ~ 1',
+    groups='gc2',
+    re_formula='1',
+    data=df_filtrado
+).fit(reml=False)
+
+print(modelo_nulo_hlm2_gc.summary())
 
 # ICC
+var_entre_gc = modelo_nulo_hlm2_gc.cov_re.iloc[0,0]
+var_residual = modelo_nulo_hlm2_gc.scale
 icc_gc = var_entre_gc / (var_entre_gc + var_residual)
-print(f'ICC: {icc_gc:.3f}')
+print(f"ICC (proporção de variância entre GC2): {icc_gc:.3f}")
 
-#ICC ≈ 0.00–0.05 → pouquíssima variância entre grupos → talvez não precise de modelo multinível.
-#ICC > 0.10 → variância considerável entre grupos → modelo multinível recomendado.
-#ICC > 0.30 → forte efeito de grupo (gc, por exemplo).
+# Significância do efeito aleatório
+efeito_aleatorio_significativo(modelo_nulo_hlm2_gc)
 
-#%% Análise da significância estatística dos efeitos aleatórios de intercepto
+lrtest(modelo_ols_nulo, modelo_nulo_hlm2_gc)
 
-teste = float(modelo_nulo_hlm2_gc.cov_re.iloc[0, 0]) /\
-    float(pd.DataFrame(modelo_nulo_hlm2_gc.summary().tables[1]).iloc[1, 1])
+#%% Modelo com interceptos aleatórios e covariáveis
 
-p_value = 2 * (1 - stats.norm.cdf(abs(teste)))
-
-print(f"Estatística z para a Significância dos Efeitos Aleatórios: {teste:.3f}")
-print(f"P-valor: {p_value:.3f}")
-
-if p_value >= 0.05:
-    print("Ausência de significância estatística dos efeitos aleatórios ao nível de confiança de 95%.")
-else:
-    print("Efeitos aleatórios contextuais significantes ao nível de confiança de 95%.")
-
-
-#%% Estimacao modelo nulo OLS
-
-# Estimação de um modelo OLS nulo
-
-modelo_ols_nulo = sm.OLS.from_formula(formula='Lucratividade ~ 1',
-                                      data=df_filtrado).fit()
-
-# Parâmetros do 'modelo_ols_nulo'
-modelo_ols_nulo.summary()
-
-
-#%%Teste de razão de verossimilhança entre o 'modelo_nulo_hlm2' e o 'modelo_ols_nulo'
-
-def lrtest(modelos):
-    modelo_1 = modelos[0]
-    llk_1 = modelo_1.llf
-    llk_2 = modelo_1.llf
-    
-    if len(modelos)>1:
-        llk_1 = modelo_1.llf
-        llk_2 = modelos[1].llf
-    LR_statistic = -2*(llk_1-llk_2)
-    p_val = stats.chi2.sf(LR_statistic, 1) # 1 grau de liberdade
-    
-    print("Likelihood Ratio Test:")
-    print(f"-2.(LL0-LLm): {round(LR_statistic, 2)}")
-    print(f"p-value: {p_val:.3f}")
-    print("")
-    print("==================Result======================== \n")
-    if p_val <= 0.05:
-        print("H1: Different models, favoring the one with the highest Log-Likelihood")
-    else:
-        print("H0: Models with log-likelihoods that are not statistically different at 95% confidence level")
-
-lrtest([modelo_ols_nulo, modelo_nulo_hlm2_gc])
-
-
-#%% Estimacao modelo intercepto aleatórias (modelo_intercept_hlm2_gc)
-# Estimação do modelo com interceptos e inclinações aleatórios
-
-# 1. Separar grupos únicos
+# Separar grupos treino/teste
 grupos = df_filtrado['gc2'].unique()
-
-# 2. Dividir grupos em treino e teste (80/20)
 grupos_train, grupos_test = train_test_split(grupos, test_size=0.2, random_state=42)
-
-# 3. Selecionar dados completos por grupo para treino e teste
 df_train = df_filtrado[df_filtrado['gc2'].isin(grupos_train)].copy()
-df_test = df_filtrado[df_filtrado['gc2'].isin(grupos_test)].copy()
+df_test  = df_filtrado[df_filtrado['gc2'].isin(grupos_test)].copy()
 
-# 4. Ajustar modelo multinível no treino
+# Ajustar modelo multinível
 modelo_intercept_hlm2_gc = sm.MixedLM.from_formula(
-    formula='Lucratividade ~ AOL + CAR + EGG + PN + P240 + P455 + IMS',
+    'Lucratividade ~ AOL + CAR + EGG + PN + P240 + P455 + IMS',
     groups='gc2',
-    re_formula='1',  # só intercepto aleatório
+    re_formula='1',
     data=df_train
-).fit(reml=False)  # ML
+).fit(reml=False)
 
 print(modelo_intercept_hlm2_gc.summary())
 
-# 5. Fazer predições no treino e teste
+# Significância do efeito aleatório
+efeito_aleatorio_significativo(modelo_intercept_hlm2_gc, idx_se_table=2)
 
-# Atenção: para teste, os grupos precisam existir no treino para predição com efeitos aleatórios.
-# Caso tenha grupo novo, statsmodels não calcula efeito aleatório, só o fixo.
-# Previsão manual com fórmula:
+# Teste de razão de verossimilhança vs modelo nulo
+lrtest(modelo_nulo_hlm2_gc, modelo_intercept_hlm2_gc)
 
-# Previsão treino
+#%% Predição e avaliação de desempenho
+
+# Atenção: grupos novos no teste não terão efeito aleatório
+grupos_novos = set(df_test['gc2']) - set(df_train['gc2'])
+if grupos_novos:
+    print(f"Atenção: {len(grupos_novos)} grupo(s) novo(s) no teste, efeitos aleatórios serão ignorados para eles")
+
+# Predição
 y_pred_train = modelo_intercept_hlm2_gc.predict(df_train)
+y_pred_test  = modelo_intercept_hlm2_gc.predict(df_test)
 
-# Previsão teste
-y_pred_test = modelo_intercept_hlm2_gc.predict(df_test)
-
-# 6. Calcular MSE
-
+# MSE
 mse_train = mean_squared_error(df_train['Lucratividade'], y_pred_train)
-mse_test = mean_squared_error(df_test['Lucratividade'], y_pred_test)
+mse_test  = mean_squared_error(df_test['Lucratividade'], y_pred_test)
 
-print(f"MSE treino (MixedLM): {mse_train:.2f}")
-print(f"MSE teste (MixedLM): {mse_test:.2f}")
-
-# Você usaria re_formula='1' quando quiser modelar a variação entre os grupos no intercepto (o valor médio da lucratividade), 
-# mas não acredita que a relação entre as variáveis independentes e a lucratividade varie de grupo para grupo. 
-# Ou seja, a influência das variáveis independentes será a mesma, mas a média da lucratividade será diferente entre os grupos.
-
-# Se você usar re_formula='1', o modelo irá permitir que a lucratividade média em cada grupo seja diferente (o intercepto), 
-# mas a relação entre as variáveis independentes e a lucratividade será a mesma em todos os grupos.
-
-# Se você tiver uma razão para acreditar que as inclinações (ou seja, a relação entre as variáveis independentes e a lucratividade) 
-# podem variar entre os grupos, então você pode incluir essas variáveis no re_formula para permitir efeitos aleatórios para elas também.
+print(f"MSE treino: {mse_train:.2f}")
+print(f"MSE teste: {mse_test:.2f}")
     
-#%%  Análise da significância estatística dos efeitos aleatórios de intercepto
-
-teste = float(modelo_intercept_hlm2_gc.cov_re.iloc[0, 0]) /\
-    float(pd.DataFrame(modelo_intercept_hlm2_gc.summary().tables[1]).iloc[2, 1])
-
-p_value = 2 * (1 - stats.norm.cdf(abs(teste)))
-
-print(f"Estatística z para a Significância dos Efeitos Aleatórios: {teste:.3f}")
-print(f"P-valor: {p_value:.3f}")
-
-if p_value >= 0.05:
-    print("Ausência de significância estatística dos efeitos aleatórios ao nível de confiança de 95%.")
-else:
-    print("Efeitos aleatórios contextuais significantes ao nível de confiança de 95%.")
-
-#%% Teste de razão de verossimilhança entre o 'modelo_nulo_hlm2_gc' e o 'modelo_intercept_hlm2_gc'
-
-def lrtest(modelos):
-    modelo_1 = modelos[0]
-    llk_1 = modelo_1.llf
-    llk_2 = modelo_1.llf
-    
-    if len(modelos)>1:
-        llk_1 = modelo_1.llf
-        llk_2 = modelos[1].llf
-    LR_statistic = -2*(llk_1-llk_2)
-    p_val = stats.chi2.sf(LR_statistic, 2) # 2 graus de liberdade
-    
-    print("Likelihood Ratio Test:")
-    print(f"-2.(LL0-LLm): {round(LR_statistic, 2)}")
-    print(f"p-value: {p_val:.3f}")
-    print("")
-    print("==================Result======================== \n")
-    if p_val <= 0.05:
-        print("H1: Different models, favoring the one with the highest Log-Likelihood")
-    else:
-        print("H0: Models with log-likelihoods that are not statistically different at 95% confidence level")
-
-lrtest([modelo_nulo_hlm2_gc, modelo_intercept_hlm2_gc])
 
 
 #%% Ajuste de Parâmetros no K-Means
@@ -1219,181 +1164,70 @@ df_filtrado['grupo_cluster'] = kmeans.fit_predict(X_kmeans).astype(str)
 df_filtrado.head()
 
 
-#%% Estimação do modelo nulo (modelo_nulo_hlm2_cluster)
+#%% Modelo nulo MixedLM por cluster
 
-#VAR DEPENDENTE = LUCRATIVIDADE
-#SEM VAR INDEPENDENTE ~1 (MODELO NULO)
-#GRUPOS = kmeans (IDENTIFICA O AGRUPAMENTO DOS ANIMAIS, CRIA UMA ESTRUTURA DE NIVEL 2 (kmeans) SOBRE OS NIVEIS 1 (ANIMAIS))
- 
-modelo_nulo_hlm2_cluster = sm.MixedLM.from_formula(formula='Lucratividade ~ 1',
-                                           groups='grupo_cluster',
-                                           re_formula='1',
-                                           data=df_filtrado).fit(reml=False)  # <- Usa ML ao invés de REML
+modelo_nulo_hlm2_cluster = sm.MixedLM.from_formula(
+    'Lucratividade ~ 1',
+    groups='grupo_cluster',
+    re_formula='1',
+    data=df_filtrado
+).fit(reml=False)
 
-# Parâmetros do 'modelo_nulo_hlm2'
-modelo_nulo_hlm2_cluster.summary()
-
-#%% ICC
-
-#O que o modelo estima?
-#Variância entre cluster: quanta variação na Lucratividade é devida às diferenças entre cluster.
-
-#Caclular o ICC (Intra-Class Correlation)
-#Mostra qual proporção da variância total está entre os grupos (cluster). Se o ICC for alto, vale a pena usar modelos multiníveis.
-
-# Variância entre escolas (nível 2)
-var_entre_cluster = modelo_nulo_hlm2_cluster.cov_re.iloc[0, 0]
-
-# Variância residual (nível 1)
-var_residual = modelo_nulo_hlm2_cluster.scale
+print(modelo_nulo_hlm2_cluster.summary())
 
 # ICC
+var_entre_cluster = modelo_nulo_hlm2_cluster.cov_re.iloc[0, 0]
+var_residual = modelo_nulo_hlm2_cluster.scale
 icc_cluster = var_entre_cluster / (var_entre_cluster + var_residual)
-print(f'ICC: {icc_cluster:.3f}')
+print(f"ICC (proporção de variância entre clusters): {icc_cluster:.3f}")
 
-#ICC ≈ 0.00–0.05 → pouquíssima variância entre grupos → talvez não precise de modelo multinível.
-#ICC > 0.10 → variância considerável entre grupos → modelo multinível recomendado.
-#ICC > 0.30 → forte efeito de grupo (escolas, por exemplo).
+#%% Comparação com OLS nulo e MixedLM GC2
 
-#%% Análise da significância estatística dos efeitos aleatórios de intercepto
+# LR test para OLS nulo vs cluster nulo
+lrtest(modelo_ols_nulo, modelo_nulo_hlm2_cluster)
 
-teste = float(modelo_nulo_hlm2_cluster.cov_re.iloc[0, 0]) /\
-    float(pd.DataFrame(modelo_nulo_hlm2_cluster.summary().tables[1]).iloc[1, 1])
+# LR test para GC2 nulo vs cluster nulo
+lrtest(modelo_nulo_hlm2_gc, modelo_nulo_hlm2_cluster)
 
-p_value = 2 * (1 - stats.norm.cdf(abs(teste)))
+#%% Modelo com interceptos aleatórios + covariáveis
 
-print(f"Estatística z para a Significância dos Efeitos Aleatórios: {teste:.3f}")
-print(f"P-valor: {p_value:.3f}")
-
-if p_value >= 0.05:
-    print("Ausência de significância estatística dos efeitos aleatórios ao nível de confiança de 95%.")
-else:
-    print("Efeitos aleatórios contextuais significantes ao nível de confiança de 95%.")
-
-
-#%%Teste de razão de verossimilhança entre o 'modelo_nulo_hlm2_cluster' e o 'modelo_ols_nulo'
-
-def lrtest(modelos):
-    modelo_1 = modelos[0]
-    llk_1 = modelo_1.llf
-    llk_2 = modelo_1.llf
-    
-    if len(modelos)>1:
-        llk_1 = modelo_1.llf
-        llk_2 = modelos[1].llf
-    LR_statistic = -2*(llk_1-llk_2)
-    p_val = stats.chi2.sf(LR_statistic, 1) # 1 grau de liberdade
-    
-    print("Likelihood Ratio Test:")
-    print(f"-2.(LL0-LLm): {round(LR_statistic, 2)}")
-    print(f"p-value: {p_val:.3f}")
-    print("")
-    print("==================Result======================== \n")
-    if p_val <= 0.05:
-        print("H1: Different models, favoring the one with the highest Log-Likelihood")
-    else:
-        print("H0: Models with log-likelihoods that are not statistically different at 95% confidence level")
-
-lrtest([modelo_ols_nulo, modelo_nulo_hlm2_cluster])
-
-#%% Teste de razão de verossimilhança entre o 'modelo_nulo_hlm2_cluster' e o 'modelo_nulo_hlm2_gc'
-
-def lrtest(modelos):
-    modelo_1 = modelos[0]
-    llk_1 = modelo_1.llf
-    llk_2 = modelo_1.llf
-    
-    if len(modelos)>1:
-        llk_1 = modelo_1.llf
-        llk_2 = modelos[1].llf
-    LR_statistic = -2*(llk_1-llk_2)
-    p_val = stats.chi2.sf(LR_statistic, 1) # 1 grau de liberdade
-    
-    print("Likelihood Ratio Test:")
-    print(f"-2.(LL0-LLm): {round(LR_statistic, 2)}")
-    print(f"p-value: {p_val:.3f}")
-    print("")
-    print("==================Result======================== \n")
-    if p_val <= 0.05:
-        print("H1: Different models, favoring the one with the highest Log-Likelihood")
-    else:
-        print("H0: Models with log-likelihoods that are not statistically different at 95% confidence level")
-
-lrtest([modelo_nulo_hlm2_gc, modelo_nulo_hlm2_cluster])
-
-
-#%% Estimacao modelo intercepto aleatórias (modelo_intercept_hlm2_cluster)
-
-# 1. Separar grupos únicos (clusters)
+# Separar clusters treino/teste
 clusters = df_filtrado['grupo_cluster'].unique()
-
-# 2. Dividir clusters em treino e teste (80/20)
 clusters_train, clusters_test = train_test_split(clusters, test_size=0.2, random_state=42)
 
-# 3. Selecionar dados completos por cluster para treino e teste
 df_train = df_filtrado[df_filtrado['grupo_cluster'].isin(clusters_train)].copy()
-df_test = df_filtrado[df_filtrado['grupo_cluster'].isin(clusters_test)].copy()
+df_test  = df_filtrado[df_filtrado['grupo_cluster'].isin(clusters_test)].copy()
 
-# 4. Ajustar modelo multinível no treino com intercepto aleatório por cluster
+# Ajustar modelo
 modelo_intercept_hlm2_cluster = sm.MixedLM.from_formula(
-    formula='Lucratividade ~ AOL + CAR + EGG + PN + P240 + P455 + IMS',
+    'Lucratividade ~ AOL + CAR + EGG + PN + P240 + P455 + IMS',
     groups='grupo_cluster',
-    re_formula='1',  # intercepto aleatório
+    re_formula='1',
     data=df_train
 ).fit(reml=False)
 
 print(modelo_intercept_hlm2_cluster.summary())
 
-# 5. Fazer predições no treino e teste
-y_pred_train = modelo_intercept_hlm2_cluster.predict(df_train)
-y_pred_test = modelo_intercept_hlm2_cluster.predict(df_test)
+# LR test: modelo nulo cluster vs modelo completo cluster
+lrtest(modelo_nulo_hlm2_cluster, modelo_intercept_hlm2_cluster)
 
-# 6. Calcular MSE para treino e teste
+#%% Predição e avaliação de desempenho
+
+grupos_novos = set(df_test['grupo_cluster']) - set(df_train['grupo_cluster'])
+if grupos_novos:
+    print(f"Atenção: {len(grupos_novos)} clusters novos no teste → efeitos aleatórios ignorados para eles")
+
+# Predição
+y_pred_train = modelo_intercept_hlm2_cluster.predict(df_train)
+y_pred_test  = modelo_intercept_hlm2_cluster.predict(df_test)
+
+# MSE
 mse_train = mean_squared_error(df_train['Lucratividade'], y_pred_train)
-mse_test = mean_squared_error(df_test['Lucratividade'], y_pred_test)
+mse_test  = mean_squared_error(df_test['Lucratividade'], y_pred_test)
 
 print(f"MSE treino (MixedLM - cluster): {mse_train:.2f}")
 print(f"MSE teste (MixedLM - cluster): {mse_test:.2f}")
 
-#%%  Análise da significância estatística dos efeitos aleatórios de intercepto
-
-teste = float(modelo_intercept_hlm2_cluster.cov_re.iloc[0, 0]) /\
-    float(pd.DataFrame(modelo_intercept_hlm2_cluster.summary().tables[1]).iloc[2, 1])
-
-p_value = 2 * (1 - stats.norm.cdf(abs(teste)))
-
-print(f"Estatística z para a Significância dos Efeitos Aleatórios: {teste:.3f}")
-print(f"P-valor: {p_value:.3f}")
-
-if p_value >= 0.05:
-    print("Ausência de significância estatística dos efeitos aleatórios ao nível de confiança de 95%.")
-else:
-    print("Efeitos aleatórios contextuais significantes ao nível de confiança de 95%.")
-
-#%% Teste de razão de verossimilhança entre o 'modelo_nulo_hlm2_cluster' e o 'modelo_intercept_hlm2_cluster'
-
-def lrtest(modelos):
-    modelo_1 = modelos[0]
-    llk_1 = modelo_1.llf
-    llk_2 = modelo_1.llf
-    
-    if len(modelos)>1:
-        llk_1 = modelo_1.llf
-        llk_2 = modelos[1].llf
-    LR_statistic = -2*(llk_1-llk_2)
-    p_val = stats.chi2.sf(LR_statistic, 2) # 2 graus de liberdade
-    
-    print("Likelihood Ratio Test:")
-    print(f"-2.(LL0-LLm): {round(LR_statistic, 2)}")
-    print(f"p-value: {p_val:.3f}")
-    print("")
-    print("==================Result======================== \n")
-    if p_val <= 0.05:
-        print("H1: Different models, favoring the one with the highest Log-Likelihood")
-    else:
-        print("H0: Models with log-likelihoods that are not statistically different at 95% confidence level")
-
-lrtest([modelo_nulo_hlm2_cluster, modelo_intercept_hlm2_cluster])
 
 #%% Gráfico para comparação visual dos logLiks dos modelos estimados até o momento (Multiniveis)
 
@@ -1430,6 +1264,7 @@ ax.tick_params(axis='x', labelsize=18)
 
 # Exibindo o gráfico
 plt.show()
+
 
 #%% REGRESSAO LINEAR X MULTINIVEL (AIC e BIC) 
 
@@ -1521,12 +1356,10 @@ print(tabela_final_sorted.to_string(index=False))
 
 
 
-
 #%% REDES NEURAIS
 
 #%% Ajustando os dados de entrada
 dados_final_sem_outliers_BP.columns
-dados_final_sem_outliers_BP = dados_final_sem_outliers_BP.drop(columns=['gc2'])
 
 
 # Separar features e variável alvo
